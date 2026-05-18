@@ -253,6 +253,44 @@ class RomMClient:
         print(f"  DEBUG: API query params: {params}")
         result = self._get("/roms", params=params, timeout=180)
         
+        # Extract items for client-side filtering
+        if isinstance(result, dict) and "items" in result:
+            items = result["items"]
+        elif isinstance(result, list):
+            items = result
+        else:
+            return result
+            
+        # The RomM API sometimes ignores platform_id when querying by collection_id (e.g. for favorites).
+        # This causes the API to return ALL ROMs in the collection across ALL platforms.
+        # We perform a client-side filter to ensure we only return ROMs that belong to the requested platform.
+        if platform_id is not None:
+            filtered_items = []
+            schema_has_platform_id = False
+            
+            for rom in items:
+                # Grab the platform ID from the ROM object
+                rom_plat_id = rom.get("platform_id")
+                if rom_plat_id is None and isinstance(rom.get("platform"), dict):
+                    rom_plat_id = rom["platform"].get("id")
+                    
+                if rom_plat_id is not None:
+                    schema_has_platform_id = True
+                    # Only keep ROMs that actually match the platform folder we are currently processing
+                    if rom_plat_id == platform_id:
+                        filtered_items.append(rom)
+                        
+            # Apply the filtered items if we successfully found platform_id fields
+            if schema_has_platform_id:
+                if isinstance(result, dict):
+                    result["items"] = filtered_items
+                    result["total"] = len(filtered_items)
+                else:
+                    result = filtered_items
+            else:
+                if items:
+                    print("  WARNING: Could not find platform_id in ROM data. Client-side filtering skipped.")
+        
         if isinstance(result, dict) and "items" in result:
             print(f"  DEBUG: API returned {len(result['items'])} ROMs (total: {result.get('total', 'unknown')})")
         elif isinstance(result, list):
