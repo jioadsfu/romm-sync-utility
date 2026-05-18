@@ -183,10 +183,11 @@ class RomMClient:
         return self._get("/collections")
     
     def get_favorites_collection_id(self) -> Optional[int]:
-        """Get the ID of the Favourites collection."""
+        """Get the ID of the Favourites/Favorites collection."""
         collections = self.get_collections()
         for collection in collections:
-            if 'favour' in collection.get('name', '').lower():
+            name = collection.get('name', '').strip().lower()
+            if name in ('favourites', 'favorites'):
                 return collection.get('id')
         return None
     
