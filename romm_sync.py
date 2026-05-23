@@ -113,7 +113,8 @@ PLATFORM_MAP = {
     "neo-geo-pocket": "ngp",
     "neo-geo-pocket-color": "ngpc",
     "nes": "nes",
-    "nintendo-3ds": "3ds",
+    "nintendo-3ds": "n3ds",
+    "new-nintendo-3ds": "n3ds",
     "nintendo-ds": "nds",
     "nintendo-switch": "switch",
     "pc-engine": "pcengine",
@@ -157,6 +158,10 @@ class RomMClient:
         self.session = requests.Session()
         self.session.auth = self.auth
         
+        # Caches to prevent redundant API calls
+        self._collections_cache = None
+        self._collection_roms_cache = {}
+        
         retry_strategy = Retry(
             total=3,
             backoff_factor=2,
@@ -180,7 +185,9 @@ class RomMClient:
     
     def get_collections(self) -> list:
         """Get all collections from RomM."""
-        return self._get("/collections")
+        if self._collections_cache is None:
+            self._collections_cache = self._get("/collections")
+        return self._collections_cache
     
     def get_favorites_collection_id(self) -> Optional[int]:
         """Get the ID of the Favourites/Favorites collection."""
@@ -232,70 +239,74 @@ class RomMClient:
         Returns:
             List of ROM dictionaries or dict with 'items' key.
         """
-        params = {"limit": limit}
-        
-        if collection_id:
-            params["collection_id"] = collection_id
-        elif favorites_only:
-            # Use collection_id to filter favorites
-            collection_id = self.get_favorites_collection_id()
-            if collection_id:
-                params["collection_id"] = collection_id
-                print(f"  DEBUG: Using Favorites collection_id={collection_id}")
-            else:
+        # Resolve effective collection ID
+        effective_collection_id = collection_id
+        if favorites_only and not effective_collection_id:
+            effective_collection_id = self.get_favorites_collection_id()
+            if not effective_collection_id:
                 # No favorites collection found - this will cause issues
-                # Return empty result to trigger error handling
                 return {"items": [], "total": 0, "_no_favorites_collection": True}
         
+        # If a collection is being queried, we fetch the whole collection once and cache it
+        if effective_collection_id is not None:
+            if effective_collection_id not in self._collection_roms_cache:
+                print(f"  DEBUG: Fetching ALL ROMs for collection {effective_collection_id} to cache locally...")
+                # Use a large limit to ensure we get all items in the collection
+                fetch_limit = max(limit, 100000)
+                params = {"limit": fetch_limit, "collection_id": effective_collection_id}
+                
+                result = self._get("/roms", params=params, timeout=180)
+                
+                if isinstance(result, dict) and "items" in result:
+                    items = result["items"]
+                elif isinstance(result, list):
+                    items = result
+                else:
+                    items = []
+                    
+                self._collection_roms_cache[effective_collection_id] = items
+                print(f"  DEBUG: Cached {len(items)} ROMs for collection {effective_collection_id}")
+
+            items = self._collection_roms_cache[effective_collection_id]
+
+            # The RomM API sometimes ignores platform_id when querying by collection_id (e.g. for favorites).
+            # We perform a client-side filter to ensure we only return ROMs that belong to the requested platform.
+            if platform_id is not None:
+                filtered_items = []
+                schema_has_platform_id = False
+                
+                for rom in items:
+                    rom_plat_id = rom.get("platform_id")
+                    if rom_plat_id is None and isinstance(rom.get("platform"), dict):
+                        rom_plat_id = rom["platform"].get("id")
+                        
+                    if rom_plat_id is not None:
+                        schema_has_platform_id = True
+                        if rom_plat_id == platform_id:
+                            filtered_items.append(rom)
+                            
+                if schema_has_platform_id:
+                    print(f"  DEBUG: Filtered {len(filtered_items)} ROMs for platform_id {platform_id} from cache")
+                    return {"items": filtered_items, "total": len(filtered_items)}
+                else:
+                    if items:
+                        print("  WARNING: Could not find platform_id in ROM data. Client-side filtering skipped.")
+            
+            return {"items": items, "total": len(items)}
+
+        # Standard query for platforms (not a collection)
+        params = {"limit": limit}
         if platform_id is not None:
             params["platform_id"] = platform_id
-        
+            
         print(f"  DEBUG: API query params: {params}")
         result = self._get("/roms", params=params, timeout=180)
-        
-        # Extract items for client-side filtering
-        if isinstance(result, dict) and "items" in result:
-            items = result["items"]
-        elif isinstance(result, list):
-            items = result
-        else:
-            return result
-            
-        # The RomM API sometimes ignores platform_id when querying by collection_id (e.g. for favorites).
-        # This causes the API to return ALL ROMs in the collection across ALL platforms.
-        # We perform a client-side filter to ensure we only return ROMs that belong to the requested platform.
-        if platform_id is not None:
-            filtered_items = []
-            schema_has_platform_id = False
-            
-            for rom in items:
-                # Grab the platform ID from the ROM object
-                rom_plat_id = rom.get("platform_id")
-                if rom_plat_id is None and isinstance(rom.get("platform"), dict):
-                    rom_plat_id = rom["platform"].get("id")
-                    
-                if rom_plat_id is not None:
-                    schema_has_platform_id = True
-                    # Only keep ROMs that actually match the platform folder we are currently processing
-                    if rom_plat_id == platform_id:
-                        filtered_items.append(rom)
-                        
-            # Apply the filtered items if we successfully found platform_id fields
-            if schema_has_platform_id:
-                if isinstance(result, dict):
-                    result["items"] = filtered_items
-                    result["total"] = len(filtered_items)
-                else:
-                    result = filtered_items
-            else:
-                if items:
-                    print("  WARNING: Could not find platform_id in ROM data. Client-side filtering skipped.")
         
         if isinstance(result, dict) and "items" in result:
             print(f"  DEBUG: API returned {len(result['items'])} ROMs (total: {result.get('total', 'unknown')})")
         elif isinstance(result, list):
             print(f"  DEBUG: API returned {len(result)} ROMs")
-        
+            
         return result
 
     def get_rom(self, rom_id: int) -> dict:
