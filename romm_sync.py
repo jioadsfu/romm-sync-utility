@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
 import re
+import zipfile
 from typing import Optional
 import logging
 import requests
@@ -456,8 +457,8 @@ def create_gamelist_xml(roms: list, retropie_folder: str, rom_base_path: str = N
     for rom in roms:
         game = ET.SubElement(root, "game")
 
-        # Path to the ROM file
-        filename = rom.get("fs_name", "") or rom.get("file_name", "")
+        # Path to the ROM file (checks our resolved multi-disc path first)
+        filename = rom.get("_resolved_file_path") or rom.get("fs_name", "") or rom.get("file_name", "")
         rom_name = rom.get("name", "Unknown")
         
         # Use filename if available, otherwise use ROM name
@@ -889,17 +890,67 @@ def sync_folder(
             if not fs_name:
                 failed += 1
                 continue
+                
+            # Create a safe name from the Game Title (removes colons, slashes, etc.)
+            rom_name = rom.get('name', 'Unknown')
+            safe_title = re.sub(r'[\\/*?:"<>|]', "", rom_name).strip()
             
-            dest_path = roms_path / fs_name
-            if dest_path.exists():
+            # EmuDeck/ES-DE: Name the folder itself with .m3u
+            folder_name = f"{safe_title}.m3u"
+            m3u_filename = f"{safe_title}.m3u"
+            
+            # Check if we ALREADY extracted this as a multi-disc game in a previous run
+            extracted_m3u_path = roms_path / folder_name / m3u_filename
+            extracted_m3u_rel = f"{folder_name}/{m3u_filename}"
+            
+            if extracted_m3u_path.exists():
                 skipped += 1
+                rom['_resolved_file_path'] = extracted_m3u_rel
                 continue
             
-            print(f"    [{idx}/{total_roms}] Downloading {fs_name}...")
-            if client.download_rom_file(rom, dest_path):
-                downloaded += 1
+            dest_path = roms_path / fs_name
+            
+            if dest_path.exists():
+                skipped += 1
             else:
-                failed += 1
+                print(f"    [{idx}/{total_roms}] Downloading {fs_name}...")
+                if client.download_rom_file(rom, dest_path):
+                    downloaded += 1
+                else:
+                    failed += 1
+                    continue # Skip multi-disc processing if download failed
+            
+            # --- MULTI-DISC ZIP DETECTION ---
+            # If the file is a zip, peek inside to see if it has 'download.m3u'
+            if dest_path.exists() and dest_path.suffix.lower() == '.zip':
+                try:
+                    with zipfile.ZipFile(dest_path, 'r') as zf:
+                        if 'download.m3u' in zf.namelist():
+                            print(f"      Detected multi-disc game! Extracting to {folder_name}...")
+                            extract_dir = roms_path / folder_name
+                            extract_dir.mkdir(exist_ok=True)
+                            
+                            # Extract everything into the new .m3u folder
+                            zf.extractall(extract_dir)
+                            
+                            # Rename the 'download.m3u' to match the Game Title
+                            orig_m3u = extract_dir / 'download.m3u'
+                            new_m3u = extract_dir / m3u_filename
+                            if orig_m3u.exists():
+                                orig_m3u.rename(new_m3u)
+                            
+                            # Tell gamelist.xml to point to this new inner m3u file
+                            rom['_resolved_file_path'] = extracted_m3u_rel
+                            
+                            # Delete the original downloaded .zip file to save space
+                            dest_path.unlink()
+                            print(f"      Extracted to {extracted_m3u_rel} and removed original ZIP.")
+                            continue
+                except zipfile.BadZipFile:
+                    print(f"      Warning: {fs_name} is not a valid zip file.")
+            
+            # If it wasn't a multi-disc game, tell gamelist to use the standard file
+            rom['_resolved_file_path'] = fs_name
         
         print(f"  Downloaded {downloaded} ROM files (skipped {skipped} existing, {failed} failed)")
     
