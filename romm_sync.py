@@ -114,6 +114,7 @@ PLATFORM_MAP = {
     "neo-geo-pocket-color": "ngpc",
     "nes": "nes",
     "nintendo-3ds": "n3ds",
+    "3ds": "n3ds",
     "new-nintendo-3ds": "n3ds",
     "nintendo-ds": "nds",
     "nintendo-switch": "switch",
