@@ -429,7 +429,7 @@ def format_date(date_str: Optional[str]) -> str:
         return ""
 
 
-def create_gamelist_xml(roms: list, platform_slug: str, retropie_folder: str, rom_base_path: str = None, kid_friendly_rom_ids: set = None, target_config: dict = None) -> ET.Element:
+def create_gamelist_xml(roms: list, retropie_folder: str, rom_base_path: str = None, kid_friendly_rom_ids: set = None, target_config: dict = None) -> ET.Element:
     """Create a gamelist.xml ElementTree from ROM data.
     
     Args:
@@ -709,9 +709,10 @@ def download_image(client: RomMClient, rom: dict, dest_path: Path, max_retries: 
     return False
 
 
-def sync_platform(
+def sync_folder(
     client: RomMClient,
-    platform: dict,
+    retropie_folder: str,
+    platforms: list,
     gamelist_base_path: Path,
     download_images: bool = True,
     download_roms: bool = False,
@@ -720,104 +721,67 @@ def sync_platform(
     favorites_only: bool = False,
     target_config: dict = None,
 ) -> int:
-    """Sync a single platform from RomM to RetroPie.
+    """Sync a group of platforms that map to the same RetroPie folder.
     
     Args:
         client: RomM API client.
-        platform: Platform dictionary from RomM.
-        gamelist_base_path: Base path for gamelist.xml output.
-        download_images: Whether to download cover images.
-        download_roms: Whether to download ROM files.
-        dry_run: If True, show what would be done without making changes.
-        rom_base_path: Optional base path for ROM files in gamelist.xml.
-        favorites_only: If True, only sync ROMs marked as favorites.
-        target_config: Target system configuration dict (from TARGET_CONFIGS).
-    
-    Returns:
-        Number of ROMs processed.
+        retropie_folder: The EmulationStation folder name (e.g. 'n3ds').
+        platforms: List of platform dictionaries from RomM that map to this folder.
+        # ... [other args remain the same]
     """
-    platform_slug = platform.get("slug", "")
-    platform_name = platform.get("name", platform_slug)
-
-    # Use default RetroPie config if no target specified
     if target_config is None:
         target_config = TARGET_CONFIGS["retropie"]
 
-    # Map to RetroPie folder name
-    retropie_folder = PLATFORM_MAP.get(platform_slug, platform_slug)
     platform_path = gamelist_base_path / retropie_folder
 
     print(f"\n{'='*60}")
-    print(f"Platform: {platform_slug} ({platform['name']})")
-    print(f"  Platform ID: {platform['id']}")
-    print(f"  EmulationStation folder: {retropie_folder}")
+    print(f"EmulationStation Folder: {retropie_folder}")
+    platform_names = ", ".join([f"{p.get('name', '')} (ID: {p.get('id')})" for p in platforms])
+    print(f"  Mapped RomM Platforms: {platform_names}")
     print(f"{'='*60}")
 
-    # Get ROMs for this platform
-    try:
-        roms_response = client.get_roms(platform["id"], favorites_only=favorites_only)
-        
-        # Check if no favorites collection was found
-        if isinstance(roms_response, dict) and roms_response.get("_no_favorites_collection"):
-            print(f"\n{'='*60}")
-            print("ERROR: No Favourites collection found!")
-            print(f"{'='*60}")
-            print("\nYou are trying to sync favorites, but this user account has no")
-            print("'Favourites' collection in RomM.")
-            print("\nTo fix this:")
-            print("  1. Log into RomM with this user account")
-            print("  2. Create a collection named 'Favourites' (or 'Favorites')")
-            print("  3. Add some ROMs to the collection")
-            print("\nOr use --all-roms to sync your entire library instead.")
-            print(f"{'='*60}\n")
-            return 0
-        
-        if isinstance(roms_response, dict) and "items" in roms_response:
-            roms = roms_response["items"]
-        elif isinstance(roms_response, list):
-            roms = roms_response
-        else:
-            print(f"  Unexpected response format: {type(roms_response)}")
-            return 0
-    except requests.RequestException as e:
-        print(f"  Error fetching ROMs: {e}")
-        return 0
+    # 1. Fetch and combine ROMs from ALL platforms mapped to this folder
+    all_roms = []
+    for platform in platforms:
+        try:
+            roms_response = client.get_roms(platform["id"], favorites_only=favorites_only)
+            
+            # Check if no favorites collection was found
+            if isinstance(roms_response, dict) and roms_response.get("_no_favorites_collection"):
+                print(f"\n{'='*60}")
+                print("ERROR: No Favourites collection found!")
+                print(f"{'='*60}")
+                print("\nYou are trying to sync favorites, but this user account has no")
+                print("'Favourites' collection in RomM.")
+                print("\nTo fix this:")
+                print("  1. Log into RomM with this user account")
+                print("  2. Create a collection named 'Favourites' (or 'Favorites')")
+                print("  3. Add some ROMs to the collection")
+                print("\nOr use --all-roms to sync your entire library instead.")
+                print(f"{'='*60}\n")
+                return 0
+            
+            if isinstance(roms_response, dict) and "items" in roms_response:
+                all_roms.extend(roms_response["items"])
+            elif isinstance(roms_response, list):
+                all_roms.extend(roms_response)
+        except requests.RequestException as e:
+            print(f"  Error fetching ROMs for platform {platform.get('name')}: {e}")
+
+    roms = all_roms
 
     if not roms:
         if favorites_only:
-            print("  No favorite ROMs found for this platform")
+            print("  No favorite ROMs found for this folder")
         else:
-            print("  No ROMs found for this platform")
+            print("  No ROMs found for this folder")
         return 0
 
     if favorites_only:
-        print(f"  Found {len(roms)} favorite ROMs")
+        print(f"  Found {len(roms)} favorite ROMs combined")
     else:
-        print(f"  Found {len(roms)} ROMs")
+        print(f"  Found {len(roms)} ROMs combined")
     
-    # Debug: Show available fields from first ROM
-    if roms:
-        print("\n  DEBUG: Sample ROM data:")
-        first_rom = roms[0]
-        print(f"    ROM: {first_rom.get('name', 'N/A')}")
-        print(f"    fs_name: '{first_rom.get('fs_name', '')}'")
-        print(f"    favorite: {first_rom.get('favorite', False)}")
-        print(f"    url_cover: {first_rom.get('url_cover')}")
-        print(f"    path_cover_s: {first_rom.get('path_cover_s')}")
-        print(f"    path_cover_l: {first_rom.get('path_cover_l')}")
-        
-        # Show actual download URL that will be used
-        cover_url = client.get_cover_url(first_rom)
-        if cover_url:
-            is_external = not cover_url.startswith(client.server_url)
-            source = "external" if is_external else "local server"
-            print(f"    Download URL ({source}): {cover_url[:80]}..." if len(cover_url) > 80 else f"    Download URL ({source}): {cover_url}")
-        
-        # Count ROMs with covers
-        roms_with_covers = sum(1 for r in roms if r.get('url_cover') or r.get('path_cover_s') or r.get('path_cover_l'))
-        print(f"    ROMs with covers: {roms_with_covers}/{len(roms)}")
-        print()
-
     if dry_run:
         action_items = []
         if download_roms:
@@ -837,8 +801,6 @@ def sync_platform(
     if not platform_path.exists():
         platform_path.mkdir(parents=True, exist_ok=True)
         logging.info(f"Created gamelist directory: {platform_path}")
-    else:
-        logging.info(f"Using existing gamelist directory: {platform_path}")
     
     # Use target-specific paths
     home_dir = Path.home()
@@ -847,7 +809,6 @@ def sync_platform(
     # Override roms_base if rom_base_path is provided
     if rom_base_path:
         rom_base_expanded = Path(rom_base_path.replace("~", str(home_dir)))
-        # Check if path already ends with /roms (from ES-DE auto-detection)
         if rom_base_expanded.name == "roms":
             roms_base = rom_base_expanded
         else:
@@ -855,7 +816,7 @@ def sync_platform(
     else:
         roms_base = Path(target_config["roms_path"].replace("~", str(home_dir)))
     
-    # Build image path with optional subdirectory (e.g., covers/ for ES-DE)
+    # Build image path with optional subdirectory
     if target_config["image_subdir"]:
         images_path = images_base / retropie_folder / target_config["image_subdir"]
     else:
@@ -869,37 +830,32 @@ def sync_platform(
     if existing_games:
         print(f"  Found {len(existing_games)} previously synced games")
         
-        # Remove games that are no longer in favorites (only when syncing favorites)
+        # Cleanup now checks against the COMBINED list of all platforms for this folder
         if favorites_only:
             removed_roms, removed_images = remove_unfavorited_games(
                 roms, existing_games, roms_path, images_path, dry_run
             )
             if removed_roms > 0 or removed_images > 0:
                 print(f"  Cleanup complete: {removed_roms} ROM(s) and {removed_images} image(s) removed")
+                
     if download_images:
         if not images_path.exists():
             images_path.mkdir(parents=True, exist_ok=True)
-            logging.info(f"Created images directory: {images_path}")
-        else:
-            logging.info(f"Using existing images directory: {images_path}")
         print("  Downloading cover images...")
         downloaded = 0
         skipped = 0
         failed = 0
-        auth_errors = 0
-        not_found = 0
         total_with_covers = sum(1 for rom in roms if rom.get("url_cover") or rom.get("path_cover_s") or rom.get("path_cover_l"))
         
         for i, rom in enumerate(roms):
             has_cover = rom.get("url_cover") or rom.get("path_cover_s") or rom.get("path_cover_l")
             if has_cover:
-                # Use ROM filename (without extension) for image name to match ES-DE expectations
                 rom_filename = rom.get("fs_name", "") or rom.get("file_name", "") or rom.get("name", "unknown")
-                rom_filename_base = Path(rom_filename).stem  # Remove extension
+                rom_filename_base = Path(rom_filename).stem
                 image_filename = f"{rom_filename_base}.png"
                 image_path = images_path / image_filename
+                
                 if not image_path.exists():
-                    # Show progress counter
                     current = downloaded + failed + 1
                     print(f"\r    Downloading image {current}/{total_with_covers}: {rom.get('name', 'Unknown')[:50]}...", end='', flush=True)
                     
@@ -908,28 +864,19 @@ def sync_platform(
                     else:
                         failed += 1
                     
-                    # Rate limiting: small delay every 10 downloads
                     if (i + 1) % 10 == 0:
                         time.sleep(0.5)
                 else:
                     skipped += 1
         
         if downloaded > 0 or failed > 0:
-            print()  # New line after progress
+            print()
         print(f"  Downloaded {downloaded} cover images (skipped {skipped} existing, {failed} failed)")
-        if failed > 0:
-            print(f"  Note: {failed} images failed to download (check auth or network issues)")
-        if downloaded == 0 and failed == 0 and skipped == 0:
-            print("  WARNING: No ROMs have cover images available")
 
-    # Download ROM files
     if download_roms and not dry_run:
         print(f"\n  Downloading ROM files to: {roms_path}")
         if not roms_path.exists():
             roms_path.mkdir(parents=True, exist_ok=True)
-            logging.info(f"Created ROMs directory: {roms_path}")
-        else:
-            logging.info(f"Using existing ROMs directory: {roms_path}")
         
         downloaded = 0
         skipped = 0
@@ -943,13 +890,10 @@ def sync_platform(
                 continue
             
             dest_path = roms_path / fs_name
-            
-            # Skip if already exists
             if dest_path.exists():
                 skipped += 1
                 continue
             
-            # Download ROM file
             print(f"    [{idx}/{total_roms}] Downloading {fs_name}...")
             if client.download_rom_file(rom, dest_path):
                 downloaded += 1
@@ -958,17 +902,11 @@ def sync_platform(
         
         print(f"  Downloaded {downloaded} ROM files (skipped {skipped} existing, {failed} failed)")
     
-    # Get kid friendly ROM IDs
     kid_friendly_rom_ids = client.get_kid_friendly_rom_ids()
-    if kid_friendly_rom_ids:
-        kid_count = sum(1 for rom in roms if rom.get('id') in kid_friendly_rom_ids)
-        if kid_count > 0:
-            print(f"  Found {kid_count} kid-friendly ROMs in this platform")
     
-    # Generate gamelist.xml
     print("  Generating gamelist.xml...")
-    gamelist = create_gamelist_xml(roms, platform_slug, retropie_folder, rom_base_path, kid_friendly_rom_ids, target_config)
-    gamelist_path = platform_path / "gamelist.xml"
+    # NOTE: I removed platform_slug from this function call to match the updated definition above
+    gamelist = create_gamelist_xml(roms, retropie_folder, rom_base_path, kid_friendly_rom_ids, target_config)
 
     xml_content = prettify_xml(gamelist)
     gamelist_path.write_text(xml_content, encoding="utf-8")
@@ -976,7 +914,6 @@ def sync_platform(
     print(f"  Wrote {gamelist_path}")
 
     return len(roms)
-
 
 def detect_esde_paths() -> dict:
     """Detect ROM and media paths from ES-DE settings.
@@ -1195,11 +1132,19 @@ Examples:
             print(f"No matching platforms found for: {args.platforms}")
             sys.exit(1)
 
-    # Sync each platform
+    # Group platforms by their destination EmulationStation folder
+    folder_groups = {}
+    for platform in platforms:
+        slug = platform.get("slug", "")
+        folder = PLATFORM_MAP.get(slug, slug)
+        if folder not in folder_groups:
+            folder_groups[folder] = []
+        folder_groups[folder].append(platform)
+
+    # Sync each grouped folder
     gamelist_path = Path(gamelist_output).expanduser()
     total_roms = 0
 
-    # Default to favorites only unless --all-roms is specified
     favorites_only = not args.all_roms
     
     if favorites_only:
@@ -1207,10 +1152,11 @@ Examples:
     else:
         print("\n** WARNING: Syncing ALL ROMs (this may take a while) **\n")
     
-    for platform in platforms:
-        count = sync_platform(
+    for folder_name, mapped_platforms in folder_groups.items():
+        count = sync_folder(
             client,
-            platform,
+            folder_name,
+            mapped_platforms,
             gamelist_path,
             download_images=not args.no_images,
             download_roms=args.download_roms,
@@ -1222,7 +1168,7 @@ Examples:
         total_roms += count
 
     print(f"\n{'='*60}")
-    print(f"Sync complete! Processed {total_roms} ROMs across {len(platforms)} platforms")
+    print(f"Sync complete! Processed {total_roms} ROMs across {len(folder_groups)} folders")
     if args.dry_run:
         print("(This was a dry run - no files were modified)")
     print(f"{'='*60}")
