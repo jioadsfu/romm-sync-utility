@@ -839,7 +839,19 @@ def sync_folder(
             )
             if removed_roms > 0 or removed_images > 0:
                 print(f"  Cleanup complete: {removed_roms} ROM(s) and {removed_images} image(s) removed")
-                
+
+    # Pre-check for already extracted multi-disc games so gamelist.xml is always correct,
+    # even if we are not downloading ROMs on this specific run.
+    for rom in roms:
+        rom_name = rom.get('name', 'Unknown')
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", rom_name).strip()
+        folder_name = f"{safe_title}.m3u"
+        m3u_filename = f"{safe_title}.m3u"
+        
+        # If the m3u folder exists from a previous run, ensure gamelist.xml points to the folder
+        if (roms_path / folder_name / m3u_filename).exists():
+            rom['_resolved_file_path'] = folder_name
+
     if download_images:
         if not images_path.exists():
             images_path.mkdir(parents=True, exist_ok=True)
@@ -901,7 +913,7 @@ def sync_folder(
             
             # Check if we ALREADY extracted this as a multi-disc game in a previous run
             extracted_m3u_path = roms_path / folder_name / m3u_filename
-            extracted_m3u_rel = f"{folder_name}/{m3u_filename}"
+            extracted_m3u_rel = folder_name
             
             if extracted_m3u_path.exists():
                 skipped += 1
@@ -921,8 +933,8 @@ def sync_folder(
                     continue # Skip multi-disc processing if download failed
             
             # --- MULTI-DISC ZIP DETECTION ---
-            # If the file is a zip, peek inside to see if it has 'download.m3u'
-            if dest_path.exists() and dest_path.suffix.lower() == '.zip':
+            # Check the actual file headers to see if it's a zip, regardless of file extension
+            if dest_path.exists() and dest_path.is_file() and zipfile.is_zipfile(dest_path):
                 try:
                     with zipfile.ZipFile(dest_path, 'r') as zf:
                         if 'download.m3u' in zf.namelist():
@@ -942,12 +954,12 @@ def sync_folder(
                             # Tell gamelist.xml to point to this new inner m3u file
                             rom['_resolved_file_path'] = extracted_m3u_rel
                             
-                            # Delete the original downloaded .zip file to save space
+                            # Delete the original downloaded file to save space
                             dest_path.unlink()
-                            print(f"      Extracted to {extracted_m3u_rel} and removed original ZIP.")
+                            print(f"      Extracted to {extracted_m3u_rel} and removed original archive.")
                             continue
                 except zipfile.BadZipFile:
-                    print(f"      Warning: {fs_name} is not a valid zip file.")
+                    print(f"      Warning: {fs_name} is corrupted or could not be read as a zip file.")
             
             # If it wasn't a multi-disc game, tell gamelist to use the standard file
             rom['_resolved_file_path'] = fs_name
