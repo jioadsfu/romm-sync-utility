@@ -253,7 +253,7 @@ class RomMClient:
             if effective_collection_id not in self._collection_roms_cache:
                 print(f"  DEBUG: Fetching ALL ROMs for collection {effective_collection_id} to cache locally...")
                 # Use a large limit to ensure we get all items in the collection
-                fetch_limit = max(limit, 100000)
+                fetch_limit = max(limit, 10000)
                 params = {"limit": fetch_limit, "collection_id": effective_collection_id}
                 
                 result = self._get("/roms", params=params, timeout=180)
